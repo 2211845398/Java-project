@@ -312,6 +312,181 @@ public class DatabaseManager {
     }
     
     /**
+     * Creates a new group conversation
+     * 
+     * @param creatorUserId The user ID of the group creator
+     * @param groupName The name of the group
+     * @return Group conversation ID, or -1 on error
+     */
+    public int createGroup(int creatorUserId, String groupName) {
+        if (connection == null) {
+            return -1;
+        }
+        
+        try {
+            connection.setAutoCommit(false);
+            
+            // Create a new 'group' type conversation
+            String insertConversationSql = "INSERT INTO conversations (type) VALUES ('group')";
+            PreparedStatement insertConvStmt = connection.prepareStatement(
+                insertConversationSql, Statement.RETURN_GENERATED_KEYS);
+            insertConvStmt.executeUpdate();
+            
+            // Get the generated conversation ID
+            ResultSet generatedKeys = insertConvStmt.getGeneratedKeys();
+            int groupId = -1;
+            if (generatedKeys.next()) {
+                groupId = generatedKeys.getInt(1);
+            }
+            
+            // Add creator as participant
+            String insertParticipantSql = "INSERT INTO participants (conversation_id, user_id) VALUES (?, ?)";
+            PreparedStatement insertPartStmt = connection.prepareStatement(insertParticipantSql);
+            insertPartStmt.setInt(1, groupId);
+            insertPartStmt.setInt(2, creatorUserId);
+            insertPartStmt.executeUpdate();
+            
+            connection.commit();
+            connection.setAutoCommit(true);
+            
+            System.out.println("[DatabaseManager] Created group (ID: " + groupId + ") by user " + creatorUserId);
+            return groupId;
+            
+        } catch (SQLException e) {
+            try {
+                connection.rollback();
+                connection.setAutoCommit(true);
+            } catch (SQLException rollbackEx) {
+                System.err.println("[DatabaseManager] Error during rollback: " + rollbackEx.getMessage());
+            }
+            System.err.println("[DatabaseManager] Error creating group: " + e.getMessage());
+            e.printStackTrace();
+            return -1;
+        }
+    }
+    
+    /**
+     * Adds a user to a group conversation
+     * 
+     * @param groupId The group conversation ID
+     * @param userId The user ID to add
+     * @return true if successful, false otherwise
+     */
+    public boolean joinGroup(int groupId, int userId) {
+        if (connection == null) {
+            return false;
+        }
+        
+        try {
+            // Check if conversation is a group
+            String checkSql = "SELECT type FROM conversations WHERE id = ? AND type = 'group'";
+            PreparedStatement checkStmt = connection.prepareStatement(checkSql);
+            checkStmt.setInt(1, groupId);
+            ResultSet rs = checkStmt.executeQuery();
+            
+            if (!rs.next()) {
+                System.out.println("[DatabaseManager] Conversation " + groupId + " is not a group");
+                return false;
+            }
+            
+            // Check if user is already a member
+            String checkMemberSql = "SELECT user_id FROM participants WHERE conversation_id = ? AND user_id = ?";
+            PreparedStatement checkMemberStmt = connection.prepareStatement(checkMemberSql);
+            checkMemberStmt.setInt(1, groupId);
+            checkMemberStmt.setInt(2, userId);
+            ResultSet memberRs = checkMemberStmt.executeQuery();
+            
+            if (memberRs.next()) {
+                System.out.println("[DatabaseManager] User " + userId + " is already a member of group " + groupId);
+                return true; // Already a member, consider it success
+            }
+            
+            // Add user to group
+            String insertSql = "INSERT INTO participants (conversation_id, user_id) VALUES (?, ?)";
+            PreparedStatement insertStmt = connection.prepareStatement(insertSql);
+            insertStmt.setInt(1, groupId);
+            insertStmt.setInt(2, userId);
+            insertStmt.executeUpdate();
+            
+            System.out.println("[DatabaseManager] User " + userId + " joined group " + groupId);
+            return true;
+            
+        } catch (SQLException e) {
+            System.err.println("[DatabaseManager] Error joining group: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+    
+    /**
+     * Gets all members of a group conversation
+     * 
+     * @param groupId The group conversation ID
+     * @return List of user IDs in the group, or empty list on error
+     */
+    public List<Integer> getGroupMembers(int groupId) {
+        List<Integer> members = new ArrayList<>();
+        
+        if (connection == null) {
+            return members;
+        }
+        
+        try {
+            String sql = "SELECT user_id FROM participants WHERE conversation_id = ?";
+            PreparedStatement stmt = connection.prepareStatement(sql);
+            stmt.setInt(1, groupId);
+            
+            ResultSet rs = stmt.executeQuery();
+            
+            while (rs.next()) {
+                members.add(rs.getInt("user_id"));
+            }
+            
+            System.out.println("[DatabaseManager] Group " + groupId + " has " + members.size() + " members");
+        } catch (SQLException e) {
+            System.err.println("[DatabaseManager] Error getting group members: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return members;
+    }
+    
+    /**
+     * Gets all groups that a user is a member of
+     * 
+     * @param userId The user ID
+     * @return List of group conversation IDs
+     */
+    public List<Integer> getUserGroups(int userId) {
+        List<Integer> groups = new ArrayList<>();
+        
+        if (connection == null) {
+            return groups;
+        }
+        
+        try {
+            String sql = "SELECT DISTINCT p.conversation_id FROM participants p " +
+                        "INNER JOIN conversations c ON p.conversation_id = c.id " +
+                        "WHERE p.user_id = ? AND c.type = 'group'";
+            PreparedStatement stmt = connection.prepareStatement(sql);
+            stmt.setInt(1, userId);
+            
+            ResultSet rs = stmt.executeQuery();
+            
+            while (rs.next()) {
+                groups.add(rs.getInt("conversation_id"));
+            }
+            
+            System.out.println("[DatabaseManager] User " + userId + " is member of " + groups.size() + " groups");
+        } catch (SQLException e) {
+            System.err.println("[DatabaseManager] Error getting user groups: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return groups;
+    }
+    
+    /**
      * Closes the database connection
      */
     public void close() {

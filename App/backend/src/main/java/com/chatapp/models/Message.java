@@ -17,6 +17,12 @@ public class Message {
     public static final String TYPE_SEND_MESSAGE = "SEND_MESSAGE";
     public static final String TYPE_GET_CONVERSATIONS = "GET_CONVERSATIONS";
     
+    // Group message types
+    public static final String TYPE_CREATE_GROUP = "CREATE_GROUP";
+    public static final String TYPE_JOIN_GROUP = "JOIN_GROUP";
+    public static final String TYPE_GET_GROUPS = "GET_GROUPS";
+    public static final String TYPE_GET_GROUP_MEMBERS = "GET_GROUP_MEMBERS";
+    
     // Response status
     public static final String STATUS_SUCCESS = "SUCCESS";
     public static final String STATUS_ERROR = "ERROR";
@@ -27,6 +33,7 @@ public class Message {
     private String username;        // Username for login/search
     private String password;        // Password for login
     private String targetUsername; // Target user for conversation
+    private String groupName;       // Group name (for group creation)
     private String content;         // Message content
     private String sender;          // Sender username (for forwarded messages)
     private String recipient;       // Recipient username (for forwarded messages)
@@ -84,6 +91,14 @@ public class Message {
     
     public void setTargetUsername(String targetUsername) {
         this.targetUsername = targetUsername;
+    }
+    
+    public String getGroupName() {
+        return groupName;
+    }
+    
+    public void setGroupName(String groupName) {
+        this.groupName = groupName;
     }
     
     public String getContent() {

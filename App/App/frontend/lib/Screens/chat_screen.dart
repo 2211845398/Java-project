@@ -15,11 +15,15 @@ import '../services/websocket_service.dart';
 class ChatScreen extends StatefulWidget {
   final String currentUsername;
   final String targetUsername;
+  final bool isGroup;
+  final int? conversationId; // For groups, pass the conversationId directly
 
   const ChatScreen({
     super.key,
     required this.currentUsername,
     required this.targetUsername,
+    this.isGroup = false,
+    this.conversationId,
   });
 
   @override
@@ -35,15 +39,20 @@ class _ChatScreenState extends State<ChatScreen> {
   // List of messages in this conversation
   final List<Map<String, dynamic>> _messages = [];
   
-  // Conversation ID (will be set after CREATE_CONVERSATION response)
+  // Conversation ID (will be set after CREATE_CONVERSATION response or from parameter)
   int? _conversationId;
 
   @override
   void initState() {
     super.initState();
     
-    // Create conversation first
-    _createConversation();
+    // If conversationId is provided (for groups), use it directly
+    if (widget.conversationId != null) {
+      _conversationId = widget.conversationId;
+    } else if (!widget.isGroup) {
+      // Create conversation first (only for single chats)
+      _createConversation();
+    }
     
     // Listen to WebSocket stream for incoming messages
     _messageSubscription = _webSocketService.messageStream.listen(
@@ -71,42 +80,52 @@ class _ChatScreenState extends State<ChatScreen> {
           // Handle incoming MESSAGE from other users
           if (message['type'] == 'MESSAGE' && 
               message['conversationId'] == _conversationId) {
-            // Check if message is for this conversation
             final sender = message['sender'] as String?;
             final recipient = message['recipient'] as String?;
             final content = message['content'] as String?;
             
-            if (sender != null && 
-                recipient != null && 
-                content != null &&
-                recipient == widget.currentUsername) {
-              // This message is for the current user
-              print('[ChatScreen] Received message from $sender: $content');
+            if (sender != null && content != null) {
+              // For groups: accept all messages in this conversation
+              // For single chats: only accept if recipient is current user
+              bool shouldAccept = false;
               
-              // Check if message already exists (avoid duplicates)
-              final exists = _messages.any((m) => 
-                m['sender'] == sender &&
-                m['content'] == content &&
-                m['timestamp'] == message['timestamp']
-              );
+              if (widget.isGroup) {
+                // Group message - accept if conversationId matches
+                shouldAccept = true;
+              } else {
+                // Single chat - accept if recipient is current user
+                shouldAccept = recipient != null && recipient == widget.currentUsername;
+              }
               
-              if (!exists && mounted) {
-                setState(() {
-                  _messages.add({
-                    'sender': sender,
-                    'recipient': recipient,
-                    'content': content,
-                    'timestamp': message['timestamp'] != null 
-                        ? DateTime.fromMillisecondsSinceEpoch(message['timestamp'] as int).toString()
-                        : DateTime.now().toString(),
-                    'isMe': false,
-                  });
-                });
+              if (shouldAccept && sender != widget.currentUsername) {
+                // This message is for the current user/group
+                print('[ChatScreen] Received message from $sender: $content');
                 
-                // Scroll to bottom when new message arrives
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _scrollToBottom();
-                });
+                // Check if message already exists (avoid duplicates)
+                final exists = _messages.any((m) => 
+                  m['sender'] == sender &&
+                  m['content'] == content &&
+                  m['timestamp'] == message['timestamp']
+                );
+                
+                if (!exists && mounted) {
+                  setState(() {
+                    _messages.add({
+                      'sender': sender,
+                      'recipient': recipient,
+                      'content': content,
+                      'timestamp': message['timestamp'] != null 
+                          ? DateTime.fromMillisecondsSinceEpoch(message['timestamp'] as int).toString()
+                          : DateTime.now().toString(),
+                      'isMe': false,
+                    });
+                  });
+                  
+                  // Scroll to bottom when new message arrives
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _scrollToBottom();
+                  });
+                }
               }
             }
           }
@@ -210,9 +229,17 @@ class _ChatScreenState extends State<ChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.targetUsername),
+            Row(
+              children: [
+                if (widget.isGroup) const Icon(Icons.group, size: 20),
+                const SizedBox(width: 4),
+                Text(widget.targetUsername),
+              ],
+            ),
             Text(
-              'Chatting with ${widget.targetUsername}',
+              widget.isGroup 
+                  ? 'Group Chat'
+                  : 'Chatting with ${widget.targetUsername}',
               style: const TextStyle(fontSize: 12),
             ),
           ],

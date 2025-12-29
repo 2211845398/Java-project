@@ -9,6 +9,7 @@ import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -187,6 +188,22 @@ public class ClientHandler extends WebSocketServer {
                     handleGetConversations(conn, request, userInfo);
                     break;
                     
+                case Message.TYPE_CREATE_GROUP:
+                    handleCreateGroup(conn, request, userInfo);
+                    break;
+                    
+                case Message.TYPE_JOIN_GROUP:
+                    handleJoinGroup(conn, request, userInfo);
+                    break;
+                    
+                case Message.TYPE_GET_GROUPS:
+                    handleGetGroups(conn, request, userInfo);
+                    break;
+                    
+                case Message.TYPE_GET_GROUP_MEMBERS:
+                    handleGetGroupMembers(conn, request, userInfo);
+                    break;
+                    
                 default:
                     sendError(conn, "Unknown message type: " + request.getType());
             }
@@ -355,62 +372,87 @@ public class ClientHandler extends WebSocketServer {
             return;
         }
         
-        // Get the other participant's user ID
-        int otherParticipantId = dbManager.getOtherParticipantId(conversationId, userInfo.authenticatedUserId);
-        
-        if (otherParticipantId == -1) {
-            sendError(conn, "Other participant not found in conversation");
-            return;
-        }
-        
         // Get sender's username
         String senderUsername = userInfo.username;
         if (senderUsername == null) {
             senderUsername = dbManager.getUsernameById(userInfo.authenticatedUserId);
         }
         
-        // Get recipient's username
-        String recipientUsername = dbManager.getUsernameById(otherParticipantId);
+        // Check if this is a group conversation or single conversation
+        // For groups, we need to get all members. For single, get the other participant.
+        List<Integer> recipients = new ArrayList<>();
         
-        System.out.println("[ClientHandler] Message from user " + userInfo.authenticatedUserId + 
-                         " (" + senderUsername + ") to user " + otherParticipantId + 
-                         " (" + recipientUsername + ") in conversation " + conversationId + ": " + content);
+        // Check conversation type by getting all participants
+        List<Integer> allParticipants = dbManager.getGroupMembers(conversationId);
+        
+        if (allParticipants.size() > 2) {
+            // This is a group conversation - send to all members except sender
+            for (Integer participantId : allParticipants) {
+                if (participantId != userInfo.authenticatedUserId) {
+                    recipients.add(participantId);
+                }
+            }
+            System.out.println("[ClientHandler] Group message from user " + userInfo.authenticatedUserId + 
+                             " (" + senderUsername + ") to group " + conversationId + 
+                             " (" + recipients.size() + " members): " + content);
+        } else {
+            // This is a single conversation - get the other participant
+            int otherParticipantId = dbManager.getOtherParticipantId(conversationId, userInfo.authenticatedUserId);
+            if (otherParticipantId == -1) {
+                sendError(conn, "Other participant not found in conversation");
+                return;
+            }
+            recipients.add(otherParticipantId);
+            String recipientUsername = dbManager.getUsernameById(otherParticipantId);
+            System.out.println("[ClientHandler] Message from user " + userInfo.authenticatedUserId + 
+                             " (" + senderUsername + ") to user " + otherParticipantId + 
+                             " (" + recipientUsername + ") in conversation " + conversationId + ": " + content);
+        }
         
         // Acknowledge receipt to sender
         Message response = Message.createSuccess(Message.TYPE_SEND_MESSAGE);
         response.setContent("Message received");
         sendMessage(conn, response);
         
-        // Forward message to the recipient if they're online
-        boolean messageForwarded = false;
-        for (Map.Entry<WebSocket, UserInfo> entry : clientData.entrySet()) {
-            WebSocket recipientConn = entry.getKey();
-            UserInfo recipientInfo = entry.getValue();
-            
-            // Check if this connection belongs to the recipient
-            if (recipientInfo.authenticatedUserId == otherParticipantId) {
-                // Create message to forward
-                Message forwardMessage = new Message();
-                forwardMessage.setType("MESSAGE");  // Use "MESSAGE" type for incoming messages
-                forwardMessage.setSender(senderUsername);
-                forwardMessage.setRecipient(recipientUsername);
-                forwardMessage.setContent(content);
-                forwardMessage.setConversationId(conversationId);
-                forwardMessage.setTimestamp(System.currentTimeMillis());
+        // Forward message to all recipients if they're online
+        int forwardedCount = 0;
+        for (Integer recipientId : recipients) {
+            for (Map.Entry<WebSocket, UserInfo> entry : clientData.entrySet()) {
+                WebSocket recipientConn = entry.getKey();
+                UserInfo recipientInfo = entry.getValue();
                 
-                // Send to recipient
-                sendMessage(recipientConn, forwardMessage);
-                messageForwarded = true;
-                
-                System.out.println("[ClientHandler] Message forwarded to user " + otherParticipantId + 
-                                 " (" + recipientUsername + ")");
-                break;
+                // Check if this connection belongs to the recipient
+                if (recipientInfo.authenticatedUserId == recipientId) {
+                    // Create message to forward
+                    Message forwardMessage = new Message();
+                    forwardMessage.setType("MESSAGE");  // Use "MESSAGE" type for incoming messages
+                    forwardMessage.setSender(senderUsername);
+                    forwardMessage.setContent(content);
+                    forwardMessage.setConversationId(conversationId);
+                    forwardMessage.setTimestamp(System.currentTimeMillis());
+                    
+                    // For single conversations, set recipient. For groups, leave it null.
+                    if (recipients.size() == 1) {
+                        String recipientUsername = dbManager.getUsernameById(recipientId);
+                        forwardMessage.setRecipient(recipientUsername);
+                    }
+                    
+                    // Send to recipient
+                    sendMessage(recipientConn, forwardMessage);
+                    forwardedCount++;
+                    
+                    String recipientUsername = dbManager.getUsernameById(recipientId);
+                    System.out.println("[ClientHandler] Message forwarded to user " + recipientId + 
+                                     " (" + recipientUsername + ")");
+                    break;
+                }
             }
         }
         
-        if (!messageForwarded) {
-            System.out.println("[ClientHandler] Recipient user " + otherParticipantId + 
-                             " (" + recipientUsername + ") is not online. Message not forwarded.");
+        if (forwardedCount == 0) {
+            System.out.println("[ClientHandler] No recipients are online. Message not forwarded.");
+        } else {
+            System.out.println("[ClientHandler] Message forwarded to " + forwardedCount + " recipient(s)");
         }
     }
     
@@ -432,6 +474,167 @@ public class ClientHandler extends WebSocketServer {
         // For now, return the active conversations stored in memory
         Message response = Message.createSuccess(Message.TYPE_GET_CONVERSATIONS);
         response.setData(userInfo.activeConversations);
+        
+        sendMessage(conn, response);
+    }
+    
+    /**
+     * Handles creating a new group
+     * 
+     * @param conn The WebSocket connection
+     * @param request The request message containing group name
+     * @param userInfo The user info for this connection
+     */
+    private void handleCreateGroup(WebSocket conn, Message request, UserInfo userInfo) {
+        // Check if user is authenticated
+        if (userInfo.authenticatedUserId == -1) {
+            sendError(conn, "Please login first");
+            return;
+        }
+        
+        String groupName = request.getGroupName();
+        
+        if (groupName == null || groupName.trim().isEmpty()) {
+            sendError(conn, "Group name is required");
+            return;
+        }
+        
+        // Create group in database
+        int groupId = dbManager.createGroup(userInfo.authenticatedUserId, groupName);
+        
+        if (groupId == -1) {
+            sendError(conn, "Failed to create group");
+            return;
+        }
+        
+        // Store this group in active conversations
+        userInfo.activeConversations.put(groupId, groupName);
+        
+        Message response = Message.createSuccess(Message.TYPE_CREATE_GROUP);
+        response.setConversationId(groupId);
+        response.setGroupName(groupName);
+        
+        System.out.println("[ClientHandler] Group '" + groupName + "' (ID: " + groupId + 
+                         ") created by user " + userInfo.authenticatedUserId);
+        
+        sendMessage(conn, response);
+    }
+    
+    /**
+     * Handles joining a group
+     * 
+     * @param conn The WebSocket connection
+     * @param request The request message containing group ID
+     * @param userInfo The user info for this connection
+     */
+    private void handleJoinGroup(WebSocket conn, Message request, UserInfo userInfo) {
+        // Check if user is authenticated
+        if (userInfo.authenticatedUserId == -1) {
+            sendError(conn, "Please login first");
+            return;
+        }
+        
+        int groupId = request.getConversationId();
+        
+        if (groupId <= 0) {
+            sendError(conn, "Invalid group ID");
+            return;
+        }
+        
+        // Join group in database
+        boolean success = dbManager.joinGroup(groupId, userInfo.authenticatedUserId);
+        
+        if (!success) {
+            sendError(conn, "Failed to join group");
+            return;
+        }
+        
+        // Get group name (you might want to store it in database)
+        String groupName = "Group " + groupId;
+        
+        // Store this group in active conversations
+        userInfo.activeConversations.put(groupId, groupName);
+        
+        Message response = Message.createSuccess(Message.TYPE_JOIN_GROUP);
+        response.setConversationId(groupId);
+        response.setGroupName(groupName);
+        
+        System.out.println("[ClientHandler] User " + userInfo.authenticatedUserId + 
+                         " joined group " + groupId);
+        
+        sendMessage(conn, response);
+    }
+    
+    /**
+     * Handles getting list of groups the user is a member of
+     * 
+     * @param conn The WebSocket connection
+     * @param request The request message
+     * @param userInfo The user info for this connection
+     */
+    private void handleGetGroups(WebSocket conn, Message request, UserInfo userInfo) {
+        // Check if user is authenticated
+        if (userInfo.authenticatedUserId == -1) {
+            sendError(conn, "Please login first");
+            return;
+        }
+        
+        // Get user's groups from database
+        List<Integer> groupIds = dbManager.getUserGroups(userInfo.authenticatedUserId);
+        
+        // Convert to map (groupId -> groupName)
+        Map<Integer, String> groups = new HashMap<>();
+        for (Integer groupId : groupIds) {
+            groups.put(groupId, "Group " + groupId); // You might want to store actual group names
+        }
+        
+        Message response = Message.createSuccess(Message.TYPE_GET_GROUPS);
+        response.setData(groups);
+        
+        System.out.println("[ClientHandler] User " + userInfo.authenticatedUserId + 
+                         " is member of " + groups.size() + " groups");
+        
+        sendMessage(conn, response);
+    }
+    
+    /**
+     * Handles getting list of members in a group
+     * 
+     * @param conn The WebSocket connection
+     * @param request The request message containing group ID
+     * @param userInfo The user info for this connection
+     */
+    private void handleGetGroupMembers(WebSocket conn, Message request, UserInfo userInfo) {
+        // Check if user is authenticated
+        if (userInfo.authenticatedUserId == -1) {
+            sendError(conn, "Please login first");
+            return;
+        }
+        
+        int groupId = request.getConversationId();
+        
+        if (groupId <= 0) {
+            sendError(conn, "Invalid group ID");
+            return;
+        }
+        
+        // Get group members from database
+        List<Integer> memberIds = dbManager.getGroupMembers(groupId);
+        
+        // Convert to usernames
+        List<String> memberUsernames = new ArrayList<>();
+        for (Integer memberId : memberIds) {
+            String username = dbManager.getUsernameById(memberId);
+            if (username != null) {
+                memberUsernames.add(username);
+            }
+        }
+        
+        Message response = Message.createSuccess(Message.TYPE_GET_GROUP_MEMBERS);
+        response.setData(memberUsernames);
+        response.setConversationId(groupId);
+        
+        System.out.println("[ClientHandler] Group " + groupId + " has " + memberUsernames.size() + " members");
         
         sendMessage(conn, response);
     }
