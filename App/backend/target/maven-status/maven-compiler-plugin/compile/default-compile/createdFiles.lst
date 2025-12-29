@@ -1,0 +1,5 @@
+com\chatapp\database\DatabaseManager.class
+com\chatapp\server\ClientHandler.class
+com\chatapp\models\Message.class
+com\chatapp\server\Server.class
+com\chatapp\server\ClientHandler$UserInfo.class
